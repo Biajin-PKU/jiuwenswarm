@@ -192,6 +192,41 @@ class TestResponseIsActuallyRead:
         assert "D11_pvalue_exact_zero" in codes
 
 
+class TestFindingsReachTheNextCall:
+    """The writing agent sees the findings of its last response on its next call."""
+
+    class _Builder:
+        def __init__(self):
+            self.sections = {}
+
+        def add_section(self, section):
+            self.sections[section.name] = section
+
+    @staticmethod
+    def _response(text):
+        class Resp:
+            content = text
+
+        return TestResponseIsActuallyRead._ctx(Resp())
+
+    @pytest.mark.asyncio
+    async def test_next_prompt_carries_only_the_latest_findings(self):
+        rail = RigorAuditRail(language="en")
+        rail.system_prompt_builder = builder = self._Builder()
+
+        def section():
+            return builder.sections[RigorAuditRail.SECTION_NAME].content["en"]
+
+        await rail.after_model_call(self._response("We observed 130% improvement."))
+        await rail.before_model_call(None)
+        assert "D9_percent_out_of_range" in section()
+
+        await rail.after_model_call(self._response("Accuracy rose to 71.3%."))
+        await rail.before_model_call(None)
+        assert "D9_percent_out_of_range" not in section()
+        assert "Rigor Self-Check" in section()
+
+
 class TestMountedInEveryMode:
     """One assembly point is not the assembly point.
 

@@ -12,7 +12,8 @@ Design constraints taken from the benchmark:
   costs nothing on the token budget and cannot itself hallucinate a finding.
 * Report, never block. The benchmark's own result is that deterministic surface forensics
   saturate near zero on final-draft-quality agent papers: what they catch is a floor, not a
-  certificate. Findings are logged for the writing loop; acceptance is not this rail's call.
+  certificate. Findings are logged and fed back to the writing agent on its next model call;
+  acceptance is not this rail's call.
 * Every finding carries the fragment that triggered it, so a downstream reviewer can confirm
   or dismiss it without rerunning the agent.
 """
@@ -193,6 +194,13 @@ Before writing any numeric result, verify each of the following:
    actually computed.
 """
 
+    _FEEDBACK_HEADER_CN = "\n## 上一轮输出的严谨性发现\n\n确定性检查在你上一轮的输出中发现以下问题，后续输出中请更正：\n"
+    _FEEDBACK_HEADER_EN = (
+        "\n## Rigor findings in your previous output\n\n"
+        "A deterministic check found these in your last response; correct them in what you "
+        "write next:\n"
+    )
+
     def __init__(
         self,
         *,
@@ -207,6 +215,7 @@ Before writing any numeric result, verify each of the following:
         self.system_prompt_builder = None
         self._agent_id: str = ""
         self._findings: list[RigorFinding] = []
+        self._last_findings: list[RigorFinding] = []
 
     @property
     def findings(self) -> list[RigorFinding]:
@@ -238,14 +247,18 @@ Before writing any numeric result, verify each of the following:
         _ = ctx
         if not self._inject_prompt or self.system_prompt_builder is None:
             return
+        cn = self._language == "cn"
+        content = self._PROMPT_CN if cn else self._PROMPT_EN
+        # The section is replaced on every call, so the agent sees the findings of
+        # its most recent response only, not an ever-growing list.
+        if self._last_findings:
+            content += (self._FEEDBACK_HEADER_CN if cn else self._FEEDBACK_HEADER_EN) + "\n".join(
+                f"- {f.render()}" for f in self._last_findings
+            ) + "\n"
         self.system_prompt_builder.add_section(
             PromptSection(
                 name=self.SECTION_NAME,
-                content={
-                    self._language: (
-                        self._PROMPT_CN if self._language == "cn" else self._PROMPT_EN
-                    )
-                },
+                content={self._language: content},
                 priority=self.SECTION_PRIORITY,
             )
         )
@@ -258,7 +271,8 @@ Before writing any numeric result, verify each of the following:
         if not text:
             return
 
-        for finding in audit_text(text):
+        self._last_findings = audit_text(text)
+        for finding in self._last_findings:
             self._findings.append(finding)
             logger.warning(
                 "[RigorAuditRail] RIGOR FINDING agent_id=%s %s",
