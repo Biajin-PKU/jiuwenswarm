@@ -182,7 +182,6 @@ class TestResponseIsActuallyRead:
     async def test_rail_records_a_finding_from_a_real_context(self):
         """End to end: a flawed draft on ctx.inputs.response must produce a finding."""
         rail = RigorAuditRail()
-        rail._agent_id = "test"
 
         class Resp:
             content = "We observed 130% improvement (p = 0.000)."
@@ -191,9 +190,6 @@ class TestResponseIsActuallyRead:
         codes = {f.code for f in rail.findings}
         assert "D9_percent_out_of_range" in codes
         assert "D11_pvalue_exact_zero" in codes
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-q"]))
 
 
 class TestMountedInEveryMode:
@@ -234,3 +230,7 @@ class TestMountedInEveryMode:
 
         rail = JiuWenSwarmDeepAdapter._build_rigor_audit_rail()
         assert rail is not None and type(rail).__name__ == "RigorAuditRail"
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))

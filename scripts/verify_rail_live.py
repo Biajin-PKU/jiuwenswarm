@@ -21,9 +21,12 @@ that fires on both is as broken as one that fires on neither.
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 import urllib.request
+
+log = logging.getLogger("verify_rail_live")
 
 CLEAN = ("Write one sentence reporting an experiment result with a mean, its "
          "sample size, a p-value and a percentage. All values must be internally "
@@ -38,13 +41,14 @@ def call(prompt, model, base, key):
     body = json.dumps({"model": model,
                        "messages": [{"role": "user", "content": prompt}]}).encode()
     req = urllib.request.Request(
-        base.rstrip("/") + "/chat/completions", data=body,
+        f"{base.rstrip('/')}/chat/completions", data=body,
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
     out = json.loads(urllib.request.urlopen(req, timeout=180).read())
     return out["choices"][0]["message"]["content"]
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=os.environ.get("PROBE_MODEL", "gpt-5.5"))
     a = ap.parse_args()
@@ -63,15 +67,14 @@ def main():
 
     rails = build_member_rails()
     names = [type(r).__name__ for r in rails]
-    print(f"rail chain: {names}")
+    log.info("rail chain: %s", names)
     rail = next((r for r in rails if type(r).__name__ == "RigorAuditRail"), None)
     if rail is None:
         sys.exit("FAIL: RigorAuditRail is not on the chain built by build_member_rails()")
-    rail._agent_id = "live-verify"
 
     def run(prompt, label):
         text = call(prompt, a.model, base, key)
-        print(f"\n[{label}] model said: {text.strip()[:180]}")
+        log.info("\n[%s] model said: %s", label, text.strip()[:180])
 
         class Resp:
             content = text
@@ -80,25 +83,24 @@ def main():
         asyncio.run(rail.after_model_call(
             AgentCallbackContext(agent=None, inputs=ModelCallInputs(response=Resp()))))
         fired = [f.code for f in rail.findings[before:]]
-        print(f"[{label}] findings: {fired or '(none)'}")
+        log.info("[%s] findings: %s", label, fired or "(none)")
         return fired
 
     clean = run(CLEAN, "clean")
     dirty = run(DIRTY, "defective")
 
-    print()
     ok = True
     if dirty:
-        print(f"✓ rail fires on live model output ({len(dirty)} finding(s))")
+        log.info("\n✓ rail fires on live model output (%d finding(s))", len(dirty))
     else:
-        print("✗ rail silent on defective output -- it is mounted but not working")
+        log.error("\n✗ rail silent on defective output -- it is mounted but not working")
         ok = False
     if clean:
-        print(f"⚠ rail also fired on the clean sample {clean}; inspect the sentence "
-              "above -- models do produce genuinely infeasible numbers unprompted, "
-              "so this is not automatically a false positive")
+        log.warning("⚠ rail also fired on the clean sample %s; inspect the sentence "
+                    "above -- models do produce genuinely infeasible numbers unprompted, "
+                    "so this is not automatically a false positive", clean)
     else:
-        print("✓ rail silent on clean output (no false alarm)")
+        log.info("✓ rail silent on clean output (no false alarm)")
 
     return 0 if ok else 1
 

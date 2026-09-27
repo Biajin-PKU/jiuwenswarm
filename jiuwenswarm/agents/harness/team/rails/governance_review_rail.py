@@ -30,7 +30,7 @@ _UNSUPPORTED_SIGNAL_RE = re.compile(
     r"\b(novel|first|only|unique|state.of.the.art|outperform|significantly better)\b",
     re.IGNORECASE,
 )
-_CITATION_RE = re.compile(r"\[[\w\s,]+\]|\\\(\\cite|\\citep|\\citet", re.IGNORECASE)
+_CITATION_RE = re.compile(r"\[[\w\s,]+\]|\\cite", re.IGNORECASE)
 _STALE_SIGNAL_RE = re.compile(
     r"\b(previous(ly)?|earlier|above|as noted|as mentioned)\b", re.IGNORECASE
 )
