@@ -59,6 +59,13 @@ assertion without constructing an unrelated window runtime. The focused macOS
 run changed from **2 failed** to **11 passed**. This repairs a test fixture, not
 an OAuth production vulnerability.
 
+Runtime single-agent tests also reused a session ID without isolating persisted
+session storage. A pre-existing web-owned session caused four process-channel
+cases to fail the legitimate ownership check. A per-test temporary session
+directory now isolates those fixtures without changing production validation or
+assertions. With a conflicting session seeded, Python 3.11 results changed from
+**4 failed, 40 passed** to **44 passed**.
+
 ## CI environment issue remains a separate check
 
 The downloadable !7499 UT report generated on 28-Sep-2026 at 00:18:13 records
