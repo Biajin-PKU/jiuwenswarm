@@ -50,6 +50,15 @@ affected renderer and event classifier, `render.py` is **98%**, `events.py` is
 **100%** (247 statements, 5 missed in total). This is scoped coverage, not a
 claim about coverage of the whole repository.
 
+## Portable desktop authorization tests
+
+Two desktop OAuth tests constructed `_WindowApi(None)` even though macOS
+initialization requires a runtime with clipboard support. They now invoke the
+static authorization method through the class, preserving every allow/deny
+assertion without constructing an unrelated window runtime. The focused macOS
+run changed from **2 failed** to **11 passed**. This repairs a test fixture, not
+an OAuth production vulnerability.
+
 ## CI environment issue remains a separate check
 
 The downloadable !7499 UT report generated on 28-Sep-2026 at 00:18:13 records
