@@ -1,0 +1,65 @@
+# Research rails and CLI regression evidence
+
+This documents the reproducible failures fixed by PR #3629, based on upstream
+`52abe68db2dd167485f6bd79d6e36e193d608e64`. Tests use synthetic events and do not
+call a model or need credentials.
+
+## Failures and checks
+
+| Trigger | Before | After | Regression test |
+| --- | --- | --- | --- |
+| Server sends a nested `chat.tool_call` | CLI displays `[tool] ?: {}` | CLI displays the tool name and arguments | `test_usage_reporting.py::test_nested_tool_call_displays_name_and_arguments` |
+| Server sends usage and context events | CLI drops accounting, even on successful runs | One summary accumulates per-call tokens and uses the latest context occupancy | `test_usage_reporting.py::test_chat_reports_usage_once_on_success_and_failure` |
+| A run fails or loses its connection after spending tokens | No usage summary | Summary is emitted once, and the client closes | Same test, error and disconnect cases |
+| A run is cancelled after receiving usage | No accounting support | Cancellation propagates after emitting usage and closing the client | `test_usage_reporting.py::test_chat_reports_usage_when_cancelled` |
+| A response cites a novelty claim with LaTeX `\cite{...}` | Governance rail flags it as uncited | Cited claims remain unflagged | `test_governance_review_rail.py::test_cited_novelty_claim_is_not_flagged` |
+
+Existing rail tests also exercise the real `AgentCallbackContext.inputs.response`
+path and both team and single-agent rail builders. Configuration tests exercise
+the `JIUWENSWARM_CONFIG_DIR` override.
+
+## Reproduce the CLI before/after result
+
+From this PR checkout, with its test dependencies installed in `.venv`:
+
+```bash
+repo_dir=$(git rev-parse --show-toplevel)
+baseline_dir=$(mktemp -d /tmp/jiuwenswarm-regression.XXXXXX)
+git worktree add --detach "$baseline_dir" 52abe68db2dd167485f6bd79d6e36e193d608e64
+
+# Expected failure: execute the new tests against the unmodified source.
+(
+  cd "$baseline_dir"
+  "$repo_dir/.venv/bin/python" -m pytest \
+    "$repo_dir/tests/unit_tests/channels/cli/test_usage_reporting.py" \
+    --import-mode=importlib -o addopts='' -o log_cli=false --asyncio-mode=auto -q
+)
+
+# Expected success: execute the same tests against the repaired source.
+.venv/bin/python -m pytest tests/unit_tests/channels/cli/test_usage_reporting.py \
+  -o addopts='' -o log_cli=false --asyncio-mode=auto -q
+```
+
+On macOS / Python 3.13.13, the baseline run gives **6 failed**, and the repaired
+run gives **6 passed**. Four cases fail on user-visible output (unknown tool name
+or missing usage); two fail because the baseline lacks the accounting helper/API.
+The cancellation case simulates task cancellation, not delivery of an OS signal.
+
+The complete CLI suite gives **154 passed**. With coverage enabled for the
+affected renderer and event classifier, `render.py` is **98%**, `events.py` is
+**100%** (247 statements, 5 missed in total). This is scoped coverage, not a
+claim about coverage of the whole repository.
+
+## CI environment issue remains a separate check
+
+The downloadable !7499 UT report generated on 28-Sep-2026 at 00:18:13 records
+commit `f6fb99f61`, not the subsequent PR head. Of its 680 failed/error entries,
+669 contain an `_ExtendedAttributes` import failure. The SDK loads from the
+project virtual environment while the API loads from the system Python
+site-packages. The report does not identify which runner configuration caused
+this mismatch.
+
+The pipeline is managed outside this repository. Local test success is not a
+replacement for a completed CI run on the latest commit. No test is skipped,
+no check is suppressed, and no package-search-path workaround is introduced by
+these regression tests.
