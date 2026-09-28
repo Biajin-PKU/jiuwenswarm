@@ -66,6 +66,32 @@ directory now isolates those fixtures without changing production validation or
 assertions. With a conflicting session seeded, Python 3.11 results changed from
 **4 failed, 40 passed** to **44 passed**.
 
+## SQLite retention on Python 3.11
+
+`TrajectoryStore.delete_expired()` committed expired-record deletion and then
+used `execute("PRAGMA incremental_vacuum").fetchall()` to reclaim freed pages.
+Python 3.11's sqlite cursor stops this no-column statement after one page, leaving
+the rest on the freelist. The same behavior occurs with SQLite 3.46 and 3.53;
+Python 3.13 does not reproduce it. Updating SQLite alone is insufficient.
+
+The fix uses `executescript("PRAGMA incremental_vacuum;")` to run the fixed
+statement to completion. It runs after the existing commit, so the retention
+transaction and rollback behavior do not change. No user input enters the SQL.
+The existing regression asserts a changed epoch, an empty freelist, fewer pages,
+and a smaller file; its assertions are unchanged:
+
+```bash
+# Run with a Python 3.11 virtual environment.
+python -m pytest tests/unit_tests/observability/test_trajectory_retention.py \
+  -k retention_rotates_the_epoch_and_shrinks_the_file \
+  -o addopts='' -o log_cli=false --asyncio-mode=auto -q
+```
+
+Before the fix, the test fails because 9 free pages remain instead of 0 on both
+Python 3.11.9 and 3.11.15. Afterwards it passes on both, and also on 3.13.13.
+The complete observability suite gives **136 passed** on Python 3.11.15, with
+**90%** statement coverage for `store.py`, including the changed vacuum call.
+
 ## CI environment issue remains a separate check
 
 The downloadable !7499 UT report generated on 28-Sep-2026 at 00:18:13 records
