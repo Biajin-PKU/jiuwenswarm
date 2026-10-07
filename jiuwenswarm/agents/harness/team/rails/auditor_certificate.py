@@ -84,7 +84,7 @@ def collision_free(universe: dict[str, str], delta: float) -> list[str]:
     toks = {s: set(NUMBER.findall(v)) | set(NUMBER.findall(perturb_literal(v, delta)))
             for s, v in universe.items() if perturb_literal(v, delta) != v}
     return sorted(s for s, t in toks.items()
-                  if t and not any(t & o for other, o in toks.items() if other != s))
+                  if t and not any(t & other_toks for other, other_toks in toks.items() if other != s))
 
 
 def resolve_accusations(accused_numbers: Iterable[str], facts: dict[str, str],
@@ -102,7 +102,7 @@ def commit(ledger: dict, salt: str) -> str:
 
 def hypergeom_sf(x: int, n: int, k: int, a: int) -> Fraction:
     """Exact P(X >= x) for X ~ Hypergeometric(population n, k planted, a draws)."""
-    if a == 0 or k == 0 or k >= n or x <= 0:
+    if 0 in (a, k) or k >= n or x <= 0:
         return Fraction(1)
     total = math.comb(n, a)
     tail = sum(math.comb(k, i) * math.comb(n - k, a - i) for i in range(x, min(k, a) + 1))
@@ -282,10 +282,18 @@ if __name__ == "__main__":
         return rng.sample(NUMBER.findall(text), 3)
 
     rejected = sum(r.p <= 0.05 for r in certify(U, render, blind, name="blind", rounds=2000, seed=2).rounds)
-    assert rejected / 2000 <= 0.05 + 3 * math.sqrt(0.05 * 0.95 / 2000), rejected
     everything = certify(U, render, NUMBER.findall, name="all", rounds=5)
-    assert all(r.p == 1.0 for r in everything.rounds) and not everything.certified
     genuine = set(NUMBER.findall(render(U)))
     oracle = certify(U, render, lambda t: set(NUMBER.findall(t)) - genuine, name="oracle", rounds=3, null_rounds=20)
-    assert oracle.certified and oracle.u0 < 0.15
-    assert hypergeom_sf(2, 20, 2, 2) == Fraction(1, 190)
+    checks = {
+        "a random auditor is rejected at most alpha of the time":
+            rejected / 2000 <= 0.05 + 3 * math.sqrt(0.05 * 0.95 / 2000),
+        "accusing everything gives p = 1 and no certificate":
+            all(r.p == 1.0 for r in everything.rounds) and not everything.certified,
+        "an oracle auditor is certified with a small bound": oracle.certified and oracle.u0 < 0.15,
+        "the hypergeometric tail is exact": hypergeom_sf(2, 20, 2, 2) == Fraction(1, 190),
+    }
+    failed = [name for name, held in checks.items() if not held]
+    if failed:
+        raise SystemExit(f"self-check failed: {failed}")
+    print("self-check OK")
