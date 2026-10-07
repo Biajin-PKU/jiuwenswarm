@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import random
 import re
@@ -44,6 +45,7 @@ from fractions import Fraction
 from typing import Callable, Iterable
 
 
+logger = logging.getLogger(__name__)
 NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 FA_LAMBDAS = tuple(2.0 ** k for k in range(-2, 7))   # fixed before any data is seen
 
@@ -296,4 +298,5 @@ if __name__ == "__main__":
     failed = [name for name, held in checks.items() if not held]
     if failed:
         raise SystemExit(f"self-check failed: {failed}")
-    print("self-check OK")
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logger.info("self-check OK")
