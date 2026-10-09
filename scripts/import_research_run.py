@@ -93,7 +93,12 @@ def main() -> int:
             imp.file_manifest(args.experiment, list(imp.EXPERIMENT_RESULT_FILES)),
             origin="source_files")
 
-    rows = imp.usage_rows(provenance, ledger, until)
+    stage_models = {
+        stage: json.loads((args.experiment / rel).read_text()).get("model") or ""
+        for stage, rel in imp.LEDGER_STAGE_RESULT.items()
+        if (args.experiment / rel).is_file()
+    }
+    rows = imp.usage_rows(provenance, ledger, until, stage_models)
 
     # Stage artifacts produced after the run by complete_research_run.py, and the
     # Jev calls that produced them. They carry their own origin, never the run's.

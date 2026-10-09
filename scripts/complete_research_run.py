@@ -268,8 +268,10 @@ def main() -> int:
     # are counted here so the reported spend covers every call ever sent.
     used = {r["source_record"].rsplit("#", 1)[-1] for r in usage}
     superseded = {"requests": 0, "input_tokens": 0, "output_tokens": 0}
+    answered_at = {}
     for line in (out / "jev_cache.jsonl").read_text(encoding="utf-8").splitlines():
         rec = json.loads(line)
+        answered_at[rec["key"][:16]] = rec.get("ts")
         if rec["key"][:16] not in used:
             superseded["requests"] += 1
             superseded["input_tokens"] += rec["response"]["usage"]["input_tokens"]
@@ -278,8 +280,9 @@ def main() -> int:
     generated_at = (json.loads(previous.read_text())["generated_at"]
                     if args.replay and previous.exists()
                     else datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    # Each row keeps the time its response was written to the cache.
     for row in usage:
-        row["ts"] = generated_at
+        row["ts"] = answered_at.get(row["source_record"].rsplit("#", 1)[-1]) or generated_at
     with (out / "usage.jsonl").open("w", encoding="utf-8") as fh:
         for row in usage:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")

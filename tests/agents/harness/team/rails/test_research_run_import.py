@@ -54,7 +54,7 @@ def test_usage_rows_carry_jiuwenswarm_token_keys_and_their_source():
     ]
     ledger = [{"stage": "blind_audit_grid", "measured": False,
                "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}]
-    rows = imp.usage_rows(provenance, ledger, UNTIL)
+    rows = imp.usage_rows(provenance, ledger, UNTIL, {"blind_audit_grid": "gpt-5.5"})
     assert [r["source_record"] for r in rows] == [
         "rh:provenance/7", "ideal_run_log.jsonl:1",
     ]
@@ -63,6 +63,7 @@ def test_usage_rows_carry_jiuwenswarm_token_keys_and_their_source():
     assert (first["input_tokens"], first["output_tokens"], first["total_tokens"]) == (100, 20, 120)
     assert first["source_runtime"] == imp.SOURCE_RUNTIME
     assert rows[1]["stage"] == "experiment" and rows[1]["measured"] is False
+    assert rows[1]["model"] == "gpt-5.5"
 
 
 def test_acquisition_is_judged_by_a_recorded_pdf_hash():

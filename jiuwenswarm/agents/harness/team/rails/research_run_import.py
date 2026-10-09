@@ -64,6 +64,12 @@ EXPERIMENT_RESULT_FILES = (
     "data/baseline_rubric.json",
     "data/baseline_detector.json",
 )
+# Ledger stage -> the result file whose `model` field names the model it called.
+LEDGER_STAGE_RESULT = {
+    "blind_audit_grid": "data/audit_grid.json",
+    "baseline_rubric": "data/baseline_rubric.json",
+    "baseline_detector": "data/baseline_detector.json",
+}
 
 
 def _sha256(path: Path) -> str:
@@ -154,11 +160,13 @@ def experiment_code_paths(experiment_root: Path) -> list[str]:
 
 
 def usage_rows(provenance: list[dict], ledger: list[dict],
-               until: datetime | None = None) -> list[dict]:
+               until: datetime | None = None,
+               stage_models: dict[str, str] | None = None) -> list[dict]:
     """One row per recorded call, in JiuwenSwarm's token keys, with its source.
 
     Provenance records started after `until` are left out. Ledger rows carry no
     timestamp; the ledger was written by the experiment run before submission.
+    `stage_models` maps a ledger stage to the model its result file names.
     """
     rows: list[dict] = []
     for rec in provenance:
@@ -188,7 +196,7 @@ def usage_rows(provenance: list[dict], ledger: list[dict],
             "ts": None,
             "stage": "experiment",
             "step": rec.get("stage"),
-            "model": "",
+            "model": (stage_models or {}).get(rec.get("stage"), ""),
             "input_tokens": prompt,
             "output_tokens": completion,
             "total_tokens": int(rec.get("total_tokens") or prompt + completion),
