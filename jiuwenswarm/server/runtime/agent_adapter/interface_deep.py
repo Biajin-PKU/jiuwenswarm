@@ -8699,6 +8699,27 @@ class JiuWenSwarmDeepAdapter:
         return security_prompt_rail
 
     @staticmethod
+    def _build_governance_review_rail() -> Any | None:
+        """Build GovernanceReviewRail for single-agent modes.
+
+        Team members get it from build_member_rails(). Agent mode assembles its
+        rails in this adapter and code mode in JiuwenSwarmCodeAdapter, which
+        reuses this builder; without it the process gate exists only on the
+        team path.
+        """
+        try:
+            from jiuwenswarm.agents.harness.team.rails.governance_review_rail import (
+                GovernanceReviewRail,
+            )
+
+            rail = GovernanceReviewRail()
+            logger.info("[JiuWenSwarmDeepAdapter] GovernanceReviewRail create success")
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] GovernanceReviewRail create failed: %s", exc)
+            rail = None
+        return rail
+
+    @staticmethod
     def _build_rigor_audit_rail(config_base: dict[str, Any] | None = None) -> Any | None:
         """Build RigorAuditRail for single-agent modes.
 
@@ -9377,6 +9398,7 @@ class JiuWenSwarmDeepAdapter:
                 {"config_base": config_base},
             ),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
+            _RailBuildInfo("_governance_review_rail", self._build_governance_review_rail),
             _RailBuildInfo(
                 "_rigor_audit_rail",
                 self._build_rigor_audit_rail,

@@ -204,6 +204,13 @@ class Certificate:
         return self.certified_at is not None
 
     def to_record(self) -> dict:
+        # e_final and the bound go through libm pow/exp/log, whose last bit can differ
+        # between the process that ran the audit and the one replaying it (measured:
+        # one ulp after a live agent call). Twelve significant digits keep the record
+        # identical across both; certified_at is decided on the unrounded path.
+        def stable(x: float) -> float:
+            return float(f"{x:.12g}")
+
         planted_hits = sum(len(r.planted & r.accused) for r in self.rounds)
         planted_total = sum(len(r.planted) for r in self.rounds)
         return {
@@ -215,10 +222,10 @@ class Certificate:
             "null_rounds": len(self.null_rounds),
             "rejections": sum(r.p <= self.alpha for r in self.rounds),
             "recall": planted_hits / planted_total if planted_total else None,
-            "e_final": self.e_path[-1] if self.e_path else 1.0,
+            "e_final": stable(self.e_path[-1]) if self.e_path else 1.0,
             "certified": self.certified,
             "certified_at_round": self.certified_at,
-            "false_accusation_upper": self.u0,
+            "false_accusation_upper": stable(self.u0),
             "round_log": [r.to_record() for r in self.rounds + self.null_rounds],
         }
 

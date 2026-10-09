@@ -126,6 +126,9 @@ class TestRailContract:
 
         names = [type(r).__name__ for r in build_member_rails()]
         assert "RigorAuditRail" in names
+        # Same regression for process governance: a rail class that exists but
+        # is not in this chain never runs.
+        assert "GovernanceReviewRail" in names
 
     def test_mounting_can_be_disabled_by_config(self):
         from jiuwenswarm.common.config import get_rigor_audit_enabled
@@ -230,11 +233,11 @@ class TestFindingsReachTheNextCall:
 class TestMountedInEveryMode:
     """One assembly point is not the assembly point.
 
-    Rails reach a running agent through two different builders: team members go
-    through build_member_rails(), while agent and code modes go through the deep
-    adapter's _build_agent_rails(). Wiring only the first leaves the single-agent
-    path — the one the CLI uses by default — with no rail at all, and the gap is
-    invisible until something actually runs.
+    Rails reach a running agent through three builders: team members go through
+    build_member_rails(), agent mode through the deep adapter's
+    _build_agent_rails(), and code mode through the code adapter's own
+    _build_agent_rails(). Wiring only one of them leaves the others with no rail
+    at all, and the gap is invisible until something actually runs.
     """
 
     def test_team_member_path_mounts_it(self):
@@ -242,7 +245,9 @@ class TestMountedInEveryMode:
             build_member_rails,
         )
 
-        assert "RigorAuditRail" in [type(r).__name__ for r in build_member_rails()]
+        names = [type(r).__name__ for r in build_member_rails()]
+        assert "RigorAuditRail" in names
+        assert "GovernanceReviewRail" in names
 
     def test_single_agent_path_registers_a_builder(self):
         import inspect
@@ -252,10 +257,15 @@ class TestMountedInEveryMode:
         )
 
         assert hasattr(JiuWenSwarmDeepAdapter, "_build_rigor_audit_rail")
+        assert hasattr(JiuWenSwarmDeepAdapter, "_build_governance_review_rail")
         src = inspect.getsource(JiuWenSwarmDeepAdapter._build_agent_rails)
         assert "_rigor_audit_rail" in src, (
             "the builder exists but is not in the rail list, so agent mode still "
             "runs without the floor"
+        )
+        assert "_governance_review_rail" in src, (
+            "process governance is mounted for team members but not for the "
+            "single agent the CLI starts by default"
         )
 
     def test_single_agent_builder_returns_a_rail(self):
@@ -264,7 +274,33 @@ class TestMountedInEveryMode:
         )
 
         rail = JiuWenSwarmDeepAdapter._build_rigor_audit_rail()
+        governance = JiuWenSwarmDeepAdapter._build_governance_review_rail()
+        assert governance is not None
+        assert type(governance).__name__ == "GovernanceReviewRail"
         assert rail is not None and type(rail).__name__ == "RigorAuditRail"
+
+    def test_single_agent_builder_honours_the_config_opt_out(self, monkeypatch):
+        # Reading the switch from None always answers "enabled", which silently
+        # ignored `rigor_audit.enabled: false` in config.yaml.
+        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+            JiuWenSwarmDeepAdapter,
+        )
+
+        monkeypatch.delenv("RIGOR_AUDIT", raising=False)
+        off = {"rigor_audit": {"enabled": False}}
+        assert JiuWenSwarmDeepAdapter._build_rigor_audit_rail(off) is None
+        assert JiuWenSwarmDeepAdapter._build_rigor_audit_rail({}) is not None
+
+    def test_code_mode_mounts_both_rails(self):
+        import inspect
+
+        from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+            JiuwenSwarmCodeAdapter,
+        )
+
+        src = inspect.getsource(JiuwenSwarmCodeAdapter._build_agent_rails)
+        assert "_rigor_audit_rail" in src
+        assert "_governance_review_rail" in src
 
 
 if __name__ == "__main__":
