@@ -59,6 +59,7 @@ def _isolate_video_mode_environment(monkeypatch) -> None:
         "JOYAI_API_BASE",
         "JOYAI_API_KEY",
         "JOYAI_MODEL_NAME",
+        "VIDEO_DUPLEX_REPLY_LANGUAGE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -97,6 +98,32 @@ def test_plugin_settings_mask_secrets_and_report_original_length(monkeypatch) ->
     assert payload["values"]["joyai_api_key"] == ""
     assert payload["configured_secret_lengths"]["joyai_api_key"] == 12
     assert payload["values"]["joyai_api_base"] == "http://127.0.0.1:8070/v1"
+
+
+def test_unconfigured_duplex_settings_do_not_prefill_models_or_endpoints(monkeypatch) -> None:
+    for env_key in (*settings.SETTING_ENV_KEYS.values(), "VIDEO_LIVE_MODE", "VIDEO_REALTIME_PROVIDER"):
+        monkeypatch.delenv(env_key, raising=False)
+
+    values = settings.settings_payload(enabled=True)["values"]
+    assert values["video_live_provider"] == "qwen_omni"
+    assert values["voice_protocol"] == "openai_http"
+    assert values["reply_language"] == "match"
+    for key in settings.SETTING_ENV_KEYS:
+        if key not in {"voice_protocol", "reply_language"}:
+            assert values[key] == ""
+    assert not joyai_provider.uses_native_voice_channel("joyai")
+    assert joyai_provider.voice_config() == ("", "", "")
+
+
+def test_reply_language_is_shared_and_validated(monkeypatch, tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(settings, "_active_env_file", lambda: env_file)
+    settings.update_settings({"reply_language": "en"})
+    assert settings.reply_language() == "en"
+    assert settings.settings_payload(enabled=True)["values"]["reply_language"] == "en"
+    assert 'VIDEO_DUPLEX_REPLY_LANGUAGE="en"' in env_file.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="reply_language"):
+        settings.update_settings({"reply_language": "invalid"})
 
 
 def test_plugin_settings_persist_provider_and_preserve_blank_secret(
@@ -519,7 +546,7 @@ async def test_joyai_channel_tts_collects_pcm_and_returns_wav(monkeypatch) -> No
         ]
     )
     monkeypatch.setenv("JOYAI_TTS_WS_URL", "ws://tts.example/ws/tts")
-    monkeypatch.setenv("JOYAI_TTS_VOICE", "this-must-not-override-the-fixed-voice")
+    monkeypatch.setenv("VOICE_TTS_VOICE", "test-voice")
     monkeypatch.setattr(websockets, "connect", lambda *args, **kwargs: socket)
 
     audio, mime, model = await joyai_provider.synthesize_channel("你好")
@@ -530,7 +557,7 @@ async def test_joyai_channel_tts_collects_pcm_and_returns_wav(monkeypatch) -> No
         assert stream.getframerate() == 24_000
         assert stream.readframes(stream.getnframes()) == pcm
     config = json.loads(socket.sent[0])["config"]
-    assert config["voice"] == "vivian"
+    assert config["voice"] == "test-voice"
     assert config["temperature"] == 0.2
     assert "Standard Mandarin" in config["instructions"]
     assert "never Cantonese" in config["instructions"]
@@ -540,9 +567,21 @@ async def test_joyai_channel_tts_collects_pcm_and_returns_wav(monkeypatch) -> No
     assert json.loads(socket.sent[2])["type"] == "input_text.commit"
 
 
-def test_video_live_mode_is_explicit_and_defaults_to_joyai(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_joyai_native_tts_requires_explicit_voice(monkeypatch) -> None:
+    monkeypatch.setenv("VOICE_TTS_ENDPOINT", "ws://tts.example/ws/tts")
+    monkeypatch.delenv("VOICE_TTS_VOICE", raising=False)
+
+    async def on_chunk(_chunk: bytes) -> None:
+        pass
+
+    with pytest.raises(RuntimeError, match="VOICE_TTS_VOICE"):
+        await joyai_provider.stream_channel_pcm("你好", on_chunk)
+
+
+def test_video_live_mode_is_explicit_and_defaults_to_qwen(monkeypatch) -> None:
     monkeypatch.delenv("VIDEO_LIVE_MODE", raising=False)
-    assert video_live._video_live_mode() == "joyai"  # pylint: disable=protected-access
+    assert video_live._video_live_mode() == "realtime"  # pylint: disable=protected-access
 
     monkeypatch.setenv("VIDEO_LIVE_MODE", "JoyAI")
     assert video_live._video_live_mode() == "joyai"  # pylint: disable=protected-access
@@ -605,6 +644,7 @@ async def test_video_config_selects_joyai_without_realtime_reference_audio(
     assert channel.responses[-1][1]["payload"] == {
         "provider": "joyai",
         "model": "jdopensource/JoyAI-VL-Interaction",
+        "reply_language": "match",
     }
 
 
@@ -631,6 +671,7 @@ async def test_video_config_selects_qwen_gateway_without_reference_audio(
         "model": "qwen3.5-omni-flash-realtime",
         "voice": "Ethan",
         "tools": video_live.qwen_omni_tools(),
+        "reply_language": "match",
     }
 
 
@@ -1202,6 +1243,7 @@ def test_registers_only_realtime_support_methods() -> None:
         "video.transcribe",
         "video.qwen.tool",
         "video.search.status",
+        "video.search.answer",
         "video.search.list",
         "video.search.control",
         "tts.synthesize",
@@ -1409,8 +1451,8 @@ async def test_joyai_user_instruction_preserves_native_silence(monkeypatch) -> N
     calls = []
     ground_calls = []
 
-    def fake_ground(instruction, tool_context):
-        ground_calls.append((instruction, tool_context))
+    def fake_ground(instruction, tool_context, reply_language):
+        ground_calls.append((instruction, tool_context, reply_language))
         return "grounded user instruction"
 
     async def fake_request(frame_data_url, instruction, joyai_session_id):
@@ -1441,6 +1483,7 @@ async def test_joyai_user_instruction_preserves_native_silence(monkeypatch) -> N
         (
             "每当画面出现瓶子时介绍它的样子。",
             "原问题：香港今天天气如何？\n最终结果：香港今日多云，局部地区有骤雨。",
+            "match",
         )
     ]
     assert calls == [("grounded user instruction", "joyai-session-user")]
@@ -1836,7 +1879,7 @@ async def test_execute_core_agent_uses_unary_content_without_custom_wrapper() ->
     assert result["realtime_brief"]["source"] == "derived"
     assert len(requests) == 1
     assert "<final_answer>" not in requests[0].params["query"]
-    assert "use Simplified Chinese" in requests[0].params["query"]
+    assert "same language as their latest utterance" in requests[0].params["query"]
     assert "JIUWEN_BRIEF_BEGIN" in requests[0].params["query"]
 
 

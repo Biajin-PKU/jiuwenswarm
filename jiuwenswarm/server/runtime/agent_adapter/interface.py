@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Tuple
 
+from gateway_protocol.hooks import AgentServerHookEvents, MemoryHookContext
+
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
 from jiuwenswarm.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
@@ -89,8 +91,6 @@ from jiuwenswarm.common.context_keys import (
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
-from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
-from jiuwenswarm.extensions.hooks_context import MemoryHookContext
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
@@ -356,6 +356,38 @@ def _is_ask_user_answer_resume(params: Any) -> bool:
         return False
     answers = params.get("answers")
     return isinstance(answers, list) and bool(answers)
+
+
+async def _persist_ask_user_answer_history(
+    request: AgentRequest,
+    session_id: str,
+    params: dict[str, Any],
+) -> None:
+    """Persist an answered question under the original question request ID."""
+    if not _is_ask_user_answer_resume(params):
+        return
+    answer_request_id = str(params.get("request_id") or "").strip()
+    if not answer_request_id:
+        return
+
+    from .sensitive_answers import redact_sensitive_answers
+
+    await _run_history_io(
+        append_history_record,
+        session_id=session_id,
+        request_id=answer_request_id,
+        channel_id=request.channel_id,
+        role="assistant",
+        event_type="chat.ask_user_answer",
+        content="",
+        timestamp=time.time(),
+        extra={
+            "request_id": answer_request_id,
+            "source": "ask_user_interrupt",
+            "answers": redact_sensitive_answers(params["answers"]),
+        },
+        mode=params.get("mode", "unknown"),
+    )
 
 
 def _resolve_final_record_timestamp(
@@ -1143,6 +1175,16 @@ class JiuWenSwarm:
     # chunks, which raises the process RSS across short-lived TUI sessions.
     STREAM_QUEUE_MAXSIZE = 64
 
+    async def configure_process_cli_run(
+        self, *, max_turns: int | None, host_tools: tuple[Any, ...]
+    ) -> None:
+        """Apply a transient machine invocation to the ready single-Agent adapter."""
+        adapter = self._ensure_adapter()
+        configure = getattr(adapter, "configure_process_cli_run", None)
+        if not callable(configure):
+            raise ValueError("process CLI run options require a single-Agent adapter")
+        await configure(max_turns=max_turns, host_tools=host_tools)
+
     def __init__(self) -> None:
         self._prepare_skill_library()
         self._adapter: AgentAdapter | None = None
@@ -1359,10 +1401,6 @@ class JiuWenSwarm:
         adapter = self._ensure_adapter(mode=mode)
         create_kwargs: dict[str, Any] = {"mode": mode, "sub_mode": sub_mode}
         if agent_definition is not None:
-            if mode != "code":
-                raise ValueError(
-                    "custom Agent definitions are supported only in code mode"
-                )
             create_kwargs["agent_definition"] = dict(agent_definition)
         await adapter.create_instance(config, **create_kwargs)
         self._runtime_agent_create_snapshot = runtime_agent_snapshot
@@ -3182,27 +3220,7 @@ class JiuWenSwarm:
         # request_id 必须用 params.request_id（原问题那一轮的 rid），而非本轮信封 id
         # （request.request_id 是前端为这次 resume 新生成的 req_xxx）——否则前端按
         # request_id 与 chat.ask_user_question 配对会失败。
-        if _is_ask_user_answer_resume(params):
-            answer_request_id = str(params.get("request_id") or "").strip()
-            if answer_request_id:
-                from .sensitive_answers import redact_sensitive_answers
-
-                await _run_history_io(
-                    append_history_record,
-                    session_id=session_id,
-                    request_id=answer_request_id,
-                    channel_id=request.channel_id,
-                    role="assistant",
-                    event_type="chat.ask_user_answer",
-                    content="",
-                    timestamp=time.time(),
-                    extra={
-                        "request_id": answer_request_id,
-                        "source": "ask_user_interrupt",
-                        "answers": redact_sensitive_answers(params.get("answers", [])),
-                    },
-                    mode=params.get("mode", "unknown"),
-                )
+        await _persist_ask_user_answer_history(request, session_id, params)
         # rid 用于 chunk 落盘的 request_id——用本轮信封 id（request.request_id），
         # 与 process_message_stream 一致：resume 这轮的 LLM 回复是新一轮产出，
         # 前端按信封 id 跟踪。chat.ask_user_answer 已上面用原问题 rid 单独落盘。
@@ -3582,11 +3600,6 @@ class JiuWenSwarm:
                 channel_metadata=request.metadata,
                 mode=params_for_history.get("mode", "unknown"),
             )
-        # 注：ask_user_answer 的落盘在 deliver_control_input 里——ask_user_interrupt
-        # resume 被 Runtime 判定为 CONTROL_INPUT，走 _deliver_control →
-        # deliver_control_input，**不经过** process_message_stream，故此方法内不再
-        # 处理答案落盘（否则是永远命中不到的死分支）。
-
         logger.info(
             "[JiuWenSwarm] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
             request.request_id, request.channel_id, session_id, self._sdk_name,
@@ -3622,6 +3635,9 @@ class JiuWenSwarm:
             model_name=params.get("model_name"),
             history_before_request_id=request.request_id,
         )
+        # Team 的交互回答走普通流式路径，不经过 deliver_control_input。
+        # 与单 Agent 使用同一落盘格式，按原问题的 params.request_id 配对。
+        await _persist_ask_user_answer_history(request, session_id, params)
 
         # Team 模式：把整个 turn 交给 team_helpers。它先用 turn.text（用户原
         # 文）解析 /debug、$member 与 slash，再用同一个 render() 投递，因此
@@ -5182,6 +5198,12 @@ class JiuWenSwarm:
         return await adapter.generate_btw_answer(session_id=session_id, question=question)
 
     # ---------- 资源清理 ----------
+
+    async def cancel_session_tasks(self, session_id: str) -> None:
+        """Cancel and join request tasks without treating idle caches as work."""
+        cancel = getattr(self._adapter, "cancel_session_tasks", None)
+        if callable(cancel):
+            await cancel(session_id)
 
     async def cleanup_session_runtime(self, session_id: str) -> bool:
         """Release in-memory runtime owned by one session while keeping persisted history."""
